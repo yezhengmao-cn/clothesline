@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
+using System.Text;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
@@ -71,6 +72,9 @@ public partial class LineWindow : Window
         Top = -Height; // 初始完全移出屏幕（白底窗口不能压在桌面上）
         Rope.Data = RopeGeometry();
         Pegs.ItemsSource = _pegs;
+
+        // 监听集合变化
+        _pegs.CollectionChanged += (_, _) => { };
 
         _hideTimer = new DispatcherTimer { Interval = HideDelay };
         _hideTimer.Tick += (_, _) => { _hideTimer.Stop(); if (!_mouseInside) SlideTo(false); };
@@ -168,7 +172,7 @@ public partial class LineWindow : Window
         _watcher = new FolderWatcher(App.ScreenshotsDir);
         _watcher.CaptureFound = path => Dispatcher.BeginInvoke(() => AddCapture(path, fromClipboard: false));
 
-        _tray = new TrayIcon(hwnd, WM_TRAYICON, "Clothesline — screenshot clothesline");
+        _tray = new TrayIcon(hwnd, WM_TRAYICON, "晾衣绳 - 截图管理工具");
         CreateHotZone();
         Logger.Log("ready");
     }
@@ -244,25 +248,112 @@ public partial class LineWindow : Window
     {
         try
         {
-            if (!Clipboard.ContainsImage()) return;
-            var img = Clipboard.GetImage();
-            if (img == null) return;
-
-            // 微信等程序的 DIB 没有 alpha 字节（全 0），直接存会得到"全透明"的 PNG，
-            // 卡片上图片就隐形了。把 alpha 抬满再存（截图本来就是不透明的）。
-            var opaque = Opaque(img);
-
-            string path = Path.Combine(App.CapturesDir, $"clip-{DateTime.Now:yyyyMMdd-HHmmss-fff}.png");
-            var encoder = new PngBitmapEncoder();
-            encoder.Frames.Add(BitmapFrame.Create(opaque));
-            using (var fs = File.Create(path)) encoder.Save(fs);
-
-            AddCapture(path, fromClipboard: true);
+            // --- 图片 ---
+            if (Clipboard.ContainsImage())
+            {
+                var img = Clipboard.GetImage();
+                if (img != null)
+                {
+                    var opaque = Opaque(img);
+                    string path = Path.Combine(App.CapturesDir, $"clip-{DateTime.Now:yyyyMMdd-HHmmss-fff}.png");
+                    var encoder = new PngBitmapEncoder();
+                    encoder.Frames.Add(BitmapFrame.Create(opaque));
+                    using (var fs = File.Create(path)) encoder.Save(fs);
+                    AddCapture(path, fromClipboard: true);
+                }
+            }
+            // --- 文字 ---
+            if (Clipboard.ContainsText(TextDataFormat.Text))
+            {
+                var text = Clipboard.GetText(TextDataFormat.Text);
+                if (!string.IsNullOrWhiteSpace(text) && text.Length <= 500)
+                {
+                    AddTextCapture(text);
+                    Logger.Log($"clipboard text pegged ({text.Length} chars)");
+                }
+            }
         }
         catch (Exception ex)
         {
             Logger.Log("clipboard read: " + ex.Message);
         }
+    }
+
+    /// <summary>将剪贴板文字渲染为缩略图（蓝色卡片风格），供晾衣绳展示。</summary>
+    private static BitmapSource? RenderTextToBitmap(string text)
+    {
+        try
+        {
+            const int W = 420, H = 80;
+            var px = new byte[W * H * 4]; // BGRA, alpha=255 全不透明
+
+            // 浅蓝底色填充
+            for (int i = 0; i < px.Length; i += 4)
+            {
+                px[i]     = 0xFE; // B
+                px[i + 1] = 0xF0; // G
+                px[i + 2] = 0xE8; // R
+                px[i + 3] = 0xFF; // A
+            }
+            // 底部装饰条（深蓝）
+            for (int y = H - 4; y < H; y++)
+                for (int x = 0; x < W; x++)
+                {
+                    int i = (y * W + x) * 4;
+                    px[i]     = 0xFB;
+                    px[i + 1] = 0xDE;
+                    px[i + 2] = 0xBB;
+                }
+            // 文字（深蓝，使用 DrawingContext 画到临时 Visual 再用 RenderTargetBitmap 提取）
+            var dv = new DrawingVisual();
+            using (var dc = dv.RenderOpen())
+            {
+                var display = text.Length > 60 ? text.Substring(0, 57) + "…" : text;
+                var ft = new FormattedText(display, System.Globalization.CultureInfo.InvariantCulture,
+                    FlowDirection.LeftToRight, new Typeface("Segoe UI"), 14,
+                    new SolidColorBrush(System.Windows.Media.Color.FromArgb(0xCC, 0x1A, 0x73, 0xDA)), 1.25);
+                dc.DrawText(ft, new Point(8, (H - ft.Height) / 2.0));
+            }
+            var rtb = new RenderTargetBitmap(W, H, 96, 96, PixelFormats.Pbgra32);
+            rtb.Render(dv);
+
+            // 把 DrawingVisual 渲染结果合成到底色缓冲区
+            int stride = W * 4;
+            int[] srcPx = new int[W * H];
+            rtb.CopyPixels(srcPx, stride, 0);
+            for (int i = 0; i < px.Length; i += 4)
+            {
+                int si = i / 4;
+                int srcA = srcPx[si] >> 24;
+                if (srcA == 0) continue; // 背景保持原色
+                int sB = srcPx[si] & 0xFF;
+                int sG = (srcPx[si] >> 8) & 0xFF;
+                int sR = (srcPx[si] >> 16) & 0xFF;
+                int dR = px[i + 2], dG = px[i + 1], dB = px[i];
+                px[i + 2] = (byte)(dR + (sR - dR) * srcA / 255);
+                px[i + 1] = (byte)(dG + (sG - dG) * srcA / 255);
+                px[i]     = (byte)(dB + (sB - dB) * srcA / 255);
+            }
+
+            var bmp = BitmapSource.Create(W, H, 96, 96, PixelFormats.Bgra32, null, px, stride);
+            bmp.Freeze();
+            return bmp;
+        }
+        catch (Exception ex)
+        {
+            Logger.Log("render text bitmap: " + ex.Message);
+            return null;
+        }
+    }
+
+    private void AddTextCapture(string text)
+    {
+        var item = new PegItem(text, _rng.NextDouble() * 10 - 5);
+        _pegs.Add(item);
+        while (_pegs.Count > MaxPegs) _pegs.RemoveAt(0);
+        Logger.Log($"text pegged ({text.Length} chars)");
+        if (_shown) SwingOne(item);
+        else Peek();
     }
 
     private void AddCapture(string path, bool fromClipboard)
@@ -445,6 +536,8 @@ public partial class LineWindow : Window
         item.Rot.BeginAnimation(RotateTransform.AngleProperty, anim);
     }
 
+    private void UpdateAllCardVisibility() { }
+
     // ---------- 照片交互 ----------
 
     private void Peg_MouseDown(object sender, MouseButtonEventArgs e)
@@ -476,8 +569,18 @@ public partial class LineWindow : Window
         var item = _pressItem;
         try
         {
-            var data = new DataObject(DataFormats.FileDrop, new[] { item.FilePath });
-            DragDrop.DoDragDrop(Pegs, data, DragDropEffects.Copy | DragDropEffects.Link);
+            if (item.Type == PegType.Text && item.Text != null)
+            {
+                // 文字卡片：拖拽复制文本
+                var data = new DataObject(DataFormats.Text, item.Text);
+                DragDrop.DoDragDrop(Pegs, data, DragDropEffects.Copy | DragDropEffects.Link);
+            }
+            else
+            {
+                // 图片卡片：拖拽文件
+                var data = new DataObject(DataFormats.FileDrop, new[] { item.FilePath });
+                DragDrop.DoDragDrop(Pegs, data, DragDropEffects.Copy | DragDropEffects.Link);
+            }
         }
         catch (Exception ex)
         {
@@ -518,15 +621,33 @@ public partial class LineWindow : Window
         {
             var menu = new ContextMenu { Placement = PlacementMode.MousePoint, PlacementTarget = fe };
 
-            var open = new MenuItem { Header = "Open image" };
-            open.Click += (_, _) => OpenFile(item);
-            var folder = new MenuItem { Header = "Show in folder" };
-            folder.Click += (_, _) => RevealFile(item.FilePath);
-            var remove = new MenuItem { Header = "Take down" };
-            remove.Click += (_, _) => _pegs.Remove(item);
+            if (item.Type == PegType.Text)
+            {
+                // 文字卡片：复制文字
+                var copy = new MenuItem { Header = "复制文字" };
+                copy.Click += (_, _) =>
+                {
+                    if (item.Text != null)
+                    {
+                        Clipboard.SetText(item.Text);
+                        FlashCopied(item);
+                    }
+                };
+                menu.Items.Add(copy);
+            }
+            else
+            {
+                // 图片卡片：打开图片/文件夹
+                var open = new MenuItem { Header = "打开图片" };
+                open.Click += (_, _) => OpenFile(item);
+                var folder = new MenuItem { Header = "在文件夹中显示" };
+                folder.Click += (_, _) => RevealFile(item.FilePath);
+                menu.Items.Add(open);
+                menu.Items.Add(folder);
+            }
 
-            menu.Items.Add(open);
-            menu.Items.Add(folder);
+            var remove = new MenuItem { Header = "取下" };
+            remove.Click += (_, _) => _pegs.Remove(item);
             menu.Items.Add(new Separator());
             menu.Items.Add(remove);
             menu.IsOpen = true;
@@ -558,12 +679,21 @@ public partial class LineWindow : Window
     {
         try
         {
-            var full = LoadFullBitmap(item.FilePath); // 复制原图，不用缩略图
-            if (full == null) return;
             _suppressClipboardUntil = DateTime.UtcNow.AddMilliseconds(700); // 别监听自己
-            Clipboard.SetImage(full);
-            FlashCopied(item);
-            Logger.Log("copied to clipboard: " + item.FilePath);
+            if (item.Type == PegType.Text && item.Text != null)
+            {
+                Clipboard.SetText(item.Text);
+                FlashCopied(item);
+                Logger.Log($"text copied to clipboard ({item.Text.Length} chars)");
+            }
+            else
+            {
+                var full = LoadFullBitmap(item.FilePath); // 复制原图，不用缩略图
+                if (full == null) return;
+                Clipboard.SetImage(full);
+                FlashCopied(item);
+                Logger.Log("copied to clipboard: " + item.FilePath);
+            }
         }
         catch (Exception ex)
         {
@@ -609,13 +739,13 @@ public partial class LineWindow : Window
             SetForegroundWindow(new WindowInteropHelper(this).Handle);
             var menu = new ContextMenu { Placement = PlacementMode.MousePoint, PlacementTarget = this };
 
-            var toggle = new MenuItem { Header = $"Show / hide ({_hotkeyLabel})" };
+            var toggle = new MenuItem { Header = $"显示 / 隐藏 ({_hotkeyLabel})" };
             toggle.Click += (_, _) => ToggleShow();
-            var shots = new MenuItem { Header = "Open screenshots folder" };
+            var shots = new MenuItem { Header = "打开截图文件夹" };
             shots.Click += (_, _) => OpenFolder(App.ScreenshotsDir);
-            var caps = new MenuItem { Header = "Open clipboard captures folder" };
+            var caps = new MenuItem { Header = "打开剪贴板截图文件夹" };
             caps.Click += (_, _) => OpenFolder(App.CapturesDir);
-            var exit = new MenuItem { Header = "Exit Clothesline" };
+            var exit = new MenuItem { Header = "退出 Clothesline" };
             exit.Click += (_, _) => ExitApp();
 
             menu.Items.Add(toggle);

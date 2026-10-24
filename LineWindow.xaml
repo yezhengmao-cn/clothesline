@@ -1,7 +1,7 @@
 <Window x:Class="Clothesline.LineWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Clothesline"
+        Title="晾衣绳"
         Width="1280" Height="190"
         WindowStyle="None" ResizeMode="NoResize" AllowsTransparency="True"
         Background="Transparent"
@@ -25,50 +25,85 @@
                 <DataTemplate>
                     <Grid Margin="8,0,0,0" Background="Transparent"
                           RenderTransformOrigin="0.5,0" RenderTransform="{Binding Xf}"
-                          MouseEnter="Peg_MouseEnter" MouseLeave="Peg_MouseLeave">
-                        <Border Background="#F7F4EE" CornerRadius="7" Padding="5"
-                                BorderBrush="#D9D0BF" BorderThickness="1" Margin="0,10,0,4">
-                            <Border.Effect>
-                                <DropShadowEffect BlurRadius="10" ShadowDepth="2" Opacity="0.3" Color="Black"/>
-                            </Border.Effect>
-                            <Image Source="{Binding Bitmap}" Stretch="Uniform" Width="92" Height="108"
-                                   Cursor="Hand"
-                                   PreviewMouseLeftButtonDown="Peg_MouseDown"
-                                   PreviewMouseMove="Peg_MouseMove"
-                                   PreviewMouseLeftButtonUp="Peg_MouseUp"
-                                   MouseRightButtonDown="Peg_RightDown"/>
-                        </Border>
-                        <Rectangle Width="12" Height="20" RadiusX="3" RadiusY="3"
-                                   Fill="#C98F4E" Stroke="#8A5A28" StrokeThickness="1"
-                                   HorizontalAlignment="Center" VerticalAlignment="Top"
-                                   Margin="0,6,0,0"/>
-                        <TextBlock Text="Copied" FontSize="11" Foreground="#4A4438"
-                                   HorizontalAlignment="Center" VerticalAlignment="Bottom"
-                                   Margin="0,0,0,4">
-                            <TextBlock.Style>
-                                <Style TargetType="TextBlock">
-                                    <Setter Property="Opacity" Value="0"/>
+                          PreviewMouseDown="Peg_MouseDown"
+                          PreviewMouseMove="Peg_MouseMove"
+                          PreviewMouseUp="Peg_MouseUp"
+                          PreviewMouseRightButtonDown="Peg_RightDown"
+                          MouseEnter="Peg_MouseEnter"
+                          MouseLeave="Peg_MouseLeave">
+                        <!-- 统一的卡片容器，根据 PegType 自动切换显示 -->
+                        <Border x:Name="CardBorder" CornerRadius="7" Padding="5"
+                                Margin="0,10,0,4">
+                            <Border.Style>
+                                <Style TargetType="Border">
+                                    <!-- 图片卡片默认样式 -->
+                                    <Setter Property="Background" Value="#F7F4EE"/>
+                                    <Setter Property="BorderBrush" Value="#D9D0BF"/>
+                                    <Setter Property="BorderThickness" Value="1"/>
+                                    <Setter Property="Effect">
+                                        <Setter.Value>
+                                            <DropShadowEffect BlurRadius="10" ShadowDepth="2" Opacity="0.3" Color="Black"/>
+                                        </Setter.Value>
+                                    </Setter>
                                     <Style.Triggers>
-                                        <DataTrigger Binding="{Binding CopyFeedback}" Value="True">
-                                            <DataTrigger.EnterActions>
-                                                <BeginStoryboard>
-                                                    <Storyboard>
-                                                        <DoubleAnimation Storyboard.TargetProperty="Opacity" To="1" Duration="0:0:0.12"/>
-                                                    </Storyboard>
-                                                </BeginStoryboard>
-                                            </DataTrigger.EnterActions>
-                                            <DataTrigger.ExitActions>
-                                                <BeginStoryboard>
-                                                    <Storyboard>
-                                                        <DoubleAnimation Storyboard.TargetProperty="Opacity" To="0" Duration="0:0:0.4"/>
-                                                    </Storyboard>
-                                                </BeginStoryboard>
-                                            </DataTrigger.ExitActions>
+                                        <!-- 文字卡片样式 -->
+                                        <DataTrigger Binding="{Binding Type}" Value="Text">
+                                            <Setter Property="Background" Value="#E8F0FE"/>
+                                            <Setter Property="BorderBrush" Value="#5BA3D9"/>
                                         </DataTrigger>
                                     </Style.Triggers>
                                 </Style>
-                            </TextBlock.Style>
-                        </TextBlock>
+                            </Border.Style>
+                            <StackPanel>
+                                <!-- 图片：只在 Type=Image 时显示 -->
+                                <Image x:Name="CardImage" Source="{Binding Bitmap}" Stretch="Uniform" Width="92" Height="108"
+                                       Cursor="Hand">
+                                    <Image.Style>
+                                        <Style TargetType="Image">
+                                            <Setter Property="Visibility" Value="Visible"/>
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding Type}" Value="Text">
+                                                    <Setter Property="Visibility" Value="Collapsed"/>
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </Image.Style>
+                                </Image>
+                                <!-- 文字文本块：只在 Type=Text 时显示 -->
+                                <TextBlock x:Name="CardText" Text="{Binding Text}" FontSize="12" Foreground="#1A73DA"
+                                           TextWrapping="Wrap" MaxWidth="200" MaxHeight="100"
+                                           Cursor="Hand">
+                                    <TextBlock.Style>
+                                        <Style TargetType="TextBlock">
+                                            <Setter Property="Visibility" Value="Collapsed"/>
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding Type}" Value="Text">
+                                                    <Setter Property="Visibility" Value="Visible"/>
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </TextBlock.Style>
+                                </TextBlock>
+                            </StackPanel>
+                        </Border>
+                        <!-- 木夹子：根据类型变色 -->
+                        <Rectangle x:Name="PegClip" Width="12" Height="20" RadiusX="3" RadiusY="3"
+                                   Fill="#C98F4E" Stroke="#8A5A28" StrokeThickness="1"
+                                   HorizontalAlignment="Center" VerticalAlignment="Top"
+                                   Margin="0,6,0,0">
+                            <Rectangle.Style>
+                                <Style TargetType="Rectangle">
+                                    <Setter Property="Fill" Value="#C98F4E"/>
+                                    <Setter Property="Stroke" Value="#8A5A28"/>
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding Type}" Value="Text">
+                                            <Setter Property="Fill" Value="#5BA3D9"/>
+                                            <Setter Property="Stroke" Value="#3A7BBF"/>
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Rectangle.Style>
+                        </Rectangle>
                     </Grid>
                 </DataTemplate>
             </ItemsControl.ItemTemplate>
