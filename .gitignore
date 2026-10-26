@@ -7,3 +7,10 @@ obj/
 probe/
 verify/
 ISSUE-DRAFT.md
+
+# 发布/构建产物与本地备份
+dist/
+dist_release/
+release_pkg/
+release_notes.json
+*.bak-*

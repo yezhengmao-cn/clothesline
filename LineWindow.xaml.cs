@@ -63,6 +63,11 @@ public partial class LineWindow : Window
     private PegItem? _pressItem;
     private bool _dragging;
 
+    // 右键延迟弹菜单：等一会儿看是不是双击（双击 = 直接取下卡片）
+    private readonly DispatcherTimer _rightClickTimer;
+    private PegItem? _pendingRightItem;
+    private FrameworkElement? _pendingRightTarget;
+
     public LineWindow()
     {
         InitializeComponent();
@@ -80,6 +85,17 @@ public partial class LineWindow : Window
         _hideTimer.Tick += (_, _) => { _hideTimer.Stop(); if (!_mouseInside) SlideTo(false); };
         _peekTimer = new DispatcherTimer { Interval = PeekHold };
         _peekTimer.Tick += (_, _) => { _peekTimer.Stop(); if (!_mouseInside) SlideTo(false); };
+
+        _rightClickTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(320) };
+        _rightClickTimer.Tick += (_, _) =>
+        {
+            _rightClickTimer.Stop();
+            var item = _pendingRightItem;
+            var target = _pendingRightTarget;
+            _pendingRightItem = null;
+            _pendingRightTarget = null;
+            if (item != null && target != null) ShowPegMenu(target, item);
+        };
 
         MouseEnter += (_, _) => { _mouseInside = true; _hideTimer.Stop(); };
         MouseLeave += (_, _) => { _mouseInside = false; if (_shown) _hideTimer.Start(); };
@@ -544,9 +560,13 @@ public partial class LineWindow : Window
     {
         if (sender is FrameworkElement fe && fe.DataContext is PegItem item)
         {
+            if (e.ChangedButton != MouseButton.Left) return; // 右键走 Peg_RightDown
+
             if (e.ClickCount >= 2)
             {
-                OpenFile(item); // Image 不是 Control，双击只能在这里用 ClickCount 判断
+                // 双击：图片用默认看图程序打开，文字卡片用系统默认文本编辑器打开
+                if (item.Type == PegType.Text) OpenTextInEditor(item);
+                else OpenFile(item);
                 _pressPoint = null;
                 _pressItem = null;
                 _dragging = false;
@@ -593,6 +613,7 @@ public partial class LineWindow : Window
 
     private void Peg_MouseUp(object sender, MouseButtonEventArgs e)
     {
+        if (e.ChangedButton != MouseButton.Left) return;
         var item = _pressItem;
         var wasDragging = _dragging;
         _pressPoint = null;
@@ -615,44 +636,85 @@ public partial class LineWindow : Window
         }
     }
 
+    /// <summary>把文字落到临时 txt，再用系统默认文本编辑器打开（UTF-8 带 BOM，记事本不乱码）。</summary>
+    private void OpenTextInEditor(PegItem item)
+    {
+        try
+        {
+            var dir = Path.Combine(Path.GetTempPath(), "Clothesline", "texts");
+            Directory.CreateDirectory(dir);
+            var path = Path.Combine(dir, "text_" + DateTime.Now.ToString("yyyyMMdd_HHmmss_fff") + ".txt");
+            File.WriteAllText(path, item.Text ?? string.Empty, new UTF8Encoding(true));
+            Process.Start(new ProcessStartInfo(path) { UseShellExecute = true });
+            Logger.Log("text opened in default editor: " + path);
+        }
+        catch (Exception ex)
+        {
+            Logger.Log("open text: " + ex.Message);
+        }
+    }
+
     private void Peg_RightDown(object sender, MouseButtonEventArgs e)
     {
-        if (sender is FrameworkElement fe && fe.DataContext is PegItem item)
+        if (sender is not FrameworkElement fe || fe.DataContext is not PegItem item) return;
+
+        if (e.ClickCount >= 2)
         {
-            var menu = new ContextMenu { Placement = PlacementMode.MousePoint, PlacementTarget = fe };
-
-            if (item.Type == PegType.Text)
-            {
-                // 文字卡片：复制文字
-                var copy = new MenuItem { Header = "复制文字" };
-                copy.Click += (_, _) =>
-                {
-                    if (item.Text != null)
-                    {
-                        Clipboard.SetText(item.Text);
-                        FlashCopied(item);
-                    }
-                };
-                menu.Items.Add(copy);
-            }
-            else
-            {
-                // 图片卡片：打开图片/文件夹
-                var open = new MenuItem { Header = "打开图片" };
-                open.Click += (_, _) => OpenFile(item);
-                var folder = new MenuItem { Header = "在文件夹中显示" };
-                folder.Click += (_, _) => RevealFile(item.FilePath);
-                menu.Items.Add(open);
-                menu.Items.Add(folder);
-            }
-
-            var remove = new MenuItem { Header = "取下" };
-            remove.Click += (_, _) => _pegs.Remove(item);
-            menu.Items.Add(new Separator());
-            menu.Items.Add(remove);
-            menu.IsOpen = true;
+            // 右键双击：直接取下卡片（取消待弹出的菜单）
+            _rightClickTimer.Stop();
+            _pendingRightItem = null;
+            _pendingRightTarget = null;
+            _pegs.Remove(item);
+            Logger.Log("right double-click: peg taken down");
             e.Handled = true;
+            return;
         }
+
+        // 右键单击：先等 320ms，确认不是双击再弹菜单
+        _pendingRightItem = item;
+        _pendingRightTarget = fe;
+        _rightClickTimer.Stop();
+        _rightClickTimer.Start();
+        e.Handled = true;
+    }
+
+    private void ShowPegMenu(FrameworkElement fe, PegItem item)
+    {
+        var menu = new ContextMenu { Placement = PlacementMode.MousePoint, PlacementTarget = fe };
+
+        if (item.Type == PegType.Text)
+        {
+            // 文字卡片：打开文本编辑器 / 复制文字
+            var edit = new MenuItem { Header = "用文本编辑器打开" };
+            edit.Click += (_, _) => OpenTextInEditor(item);
+            var copy = new MenuItem { Header = "复制文字" };
+            copy.Click += (_, _) =>
+            {
+                if (item.Text != null)
+                {
+                    Clipboard.SetText(item.Text);
+                    FlashCopied(item);
+                }
+            };
+            menu.Items.Add(edit);
+            menu.Items.Add(copy);
+        }
+        else
+        {
+            // 图片卡片：打开图片/文件夹
+            var open = new MenuItem { Header = "打开图片" };
+            open.Click += (_, _) => OpenFile(item);
+            var folder = new MenuItem { Header = "在文件夹中显示" };
+            folder.Click += (_, _) => RevealFile(item.FilePath);
+            menu.Items.Add(open);
+            menu.Items.Add(folder);
+        }
+
+        var remove = new MenuItem { Header = "取下" };
+        remove.Click += (_, _) => _pegs.Remove(item);
+        menu.Items.Add(new Separator());
+        menu.Items.Add(remove);
+        menu.IsOpen = true;
     }
 
     private void Peg_MouseEnter(object sender, MouseEventArgs e)
