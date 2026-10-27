@@ -37,11 +37,10 @@ public partial class LineWindow : Window
     private static readonly TimeSpan DedupWindow = TimeSpan.FromSeconds(6);
 
     // 忽略词黑名单：某些程序会往剪贴板写垃圾文字（如 360 桌面打开"此电脑"时写 "Clink"），
-    // 文字（trim 后）与黑名单完全一致就不挂卡片
-    private static readonly HashSet<string> TextBlacklist = new(StringComparer.Ordinal)
-    {
-        "Clink",
-    };
+    // 文字（trim 后）与黑名单完全一致就不挂卡片。
+    // 托盘右键菜单可增删，持久化到 App.DataDir/blacklist.txt
+    private static readonly string BlacklistPath = Path.Combine(App.DataDir, "blacklist.txt");
+    private readonly HashSet<string> _textBlacklist = new(StringComparer.Ordinal);
     private static readonly TimeSpan PeekHold = TimeSpan.FromSeconds(2.8);
     private static readonly TimeSpan HideDelay = TimeSpan.FromMilliseconds(350);
 
@@ -103,6 +102,8 @@ public partial class LineWindow : Window
             _pendingRightTarget = null;
             if (item != null && target != null) ShowPegMenu(target, item);
         };
+
+        LoadBlacklist();
 
         MouseEnter += (_, _) => { _mouseInside = true; _hideTimer.Stop(); };
         MouseLeave += (_, _) => { _mouseInside = false; if (_shown) _hideTimer.Start(); };
@@ -291,7 +292,7 @@ public partial class LineWindow : Window
                 var text = Clipboard.GetText(TextDataFormat.Text);
                 if (!string.IsNullOrWhiteSpace(text) && text.Length <= 500)
                 {
-                    if (TextBlacklist.Contains(text.Trim()))
+                    if (_textBlacklist.Contains(text.Trim()))
                     {
                         Logger.Log($"blacklisted text ignored: {text.Trim()}");
                     }
@@ -649,6 +650,80 @@ public partial class LineWindow : Window
         CopyToClipboard(item);
     }
 
+    // ---------- 忽略词黑名单 ----------
+
+    private void LoadBlacklist()
+    {
+        _textBlacklist.Add("Clink"); // 默认兜底：360 桌面的垃圾词
+        try
+        {
+            if (File.Exists(BlacklistPath))
+            {
+                foreach (var line in File.ReadAllLines(BlacklistPath, Encoding.UTF8))
+                    if (!string.IsNullOrWhiteSpace(line)) _textBlacklist.Add(line.Trim());
+            }
+            else
+            {
+                SaveBlacklist(); // 首次运行生成文件
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Log("blacklist load: " + ex.Message);
+        }
+    }
+
+    private void SaveBlacklist()
+    {
+        try
+        {
+            Directory.CreateDirectory(App.DataDir);
+            File.WriteAllLines(BlacklistPath,
+                _textBlacklist.OrderBy(w => w, StringComparer.Ordinal), Encoding.UTF8);
+        }
+        catch (Exception ex)
+        {
+            Logger.Log("blacklist save: " + ex.Message);
+        }
+    }
+
+    /// <summary>小输入窗：添加一个忽略词（空词/重复词不收）。</summary>
+    private void ShowAddBlacklistDialog()
+    {
+        var dlg = new Window
+        {
+            Title = "添加忽略词",
+            Width = 380,
+            SizeToContent = SizeToContent.Height,
+            WindowStartupLocation = WindowStartupLocation.CenterScreen,
+            ResizeMode = ResizeMode.NoResize,
+            ShowInTaskbar = false,
+        };
+        var box = new TextBox { Margin = new Thickness(14), FontSize = 14, Padding = new Thickness(6, 8, 6, 8) };
+        var ok = new Button { Content = "确定", Width = 72, Margin = new Thickness(4), IsDefault = true, Padding = new Thickness(0, 4, 0, 4) };
+        var cancel = new Button { Content = "取消", Width = 72, Margin = new Thickness(4), IsCancel = true, Padding = new Thickness(0, 4, 0, 4) };
+        ok.Click += (_, _) =>
+        {
+            var word = box.Text.Trim();
+            if (word.Length == 0) { dlg.Title = "添加忽略词 — 请输入内容"; return; }
+            if (_textBlacklist.Contains(word)) { dlg.Title = "添加忽略词 — 该词已在黑名单中"; return; }
+            _textBlacklist.Add(word);
+            SaveBlacklist();
+            Logger.Log("blacklist added: " + word);
+            dlg.Close();
+        };
+        box.KeyDown += (_, e) => { if (e.Key == Key.Enter) ok.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent)); };
+        var btns = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 0, 14, 14) };
+        btns.Children.Add(ok);
+        btns.Children.Add(cancel);
+        var root = new StackPanel();
+        root.Children.Add(box);
+        root.Children.Add(btns);
+        dlg.Content = root;
+        dlg.Loaded += (_, _) => box.Focus();
+        dlg.ShowDialog();
+    }
+
     private void OpenFile(PegItem item)
     {
         try
@@ -839,6 +914,26 @@ public partial class LineWindow : Window
             menu.Items.Add(new Separator());
             menu.Items.Add(shots);
             menu.Items.Add(caps);
+
+            // 忽略词黑名单子菜单：点词即删，底部可添加
+            var blMenu = new MenuItem { Header = "忽略词黑名单" };
+            foreach (var word in _textBlacklist.OrderBy(w => w, StringComparer.Ordinal))
+            {
+                var w = word;
+                var mi = new MenuItem { Header = "✖  " + w };
+                mi.Click += (_, _) =>
+                {
+                    _textBlacklist.Remove(w);
+                    SaveBlacklist();
+                    Logger.Log("blacklist removed: " + w);
+                };
+                blMenu.Items.Add(mi);
+            }
+            var addWord = new MenuItem { Header = "➕ 添加忽略词…" };
+            addWord.Click += (_, _) => ShowAddBlacklistDialog();
+            blMenu.Items.Add(addWord);
+            menu.Items.Add(blMenu);
+
             menu.Items.Add(new Separator());
             menu.Items.Add(exit);
             menu.IsOpen = true;
