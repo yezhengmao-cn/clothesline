@@ -364,6 +364,17 @@ public partial class LineWindow : Window
 
     private void AddTextCapture(string text)
     {
+        // 永不重复挂：绳上已有相同内容的文本卡片就跳过
+        // （有些程序会反复把同一个词写进剪贴板，不去重就会挂一排一样的卡）
+        foreach (var p in _pegs)
+        {
+            if (p.Type == PegType.Text && p.Text == text)
+            {
+                Logger.Log("text dedup skip (same text already on the line)");
+                return;
+            }
+        }
+
         var item = new PegItem(text, _rng.NextDouble() * 10 - 5);
         _pegs.Add(item);
         while (_pegs.Count > MaxPegs) _pegs.RemoveAt(0);
