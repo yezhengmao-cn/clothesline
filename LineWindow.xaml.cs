@@ -35,6 +35,13 @@ public partial class LineWindow : Window
     private const double WinH = 190;
     private const int MaxPegs = 10;
     private static readonly TimeSpan DedupWindow = TimeSpan.FromSeconds(6);
+
+    // 忽略词黑名单：某些程序会往剪贴板写垃圾文字（如 360 桌面打开"此电脑"时写 "Clink"），
+    // 文字（trim 后）与黑名单完全一致就不挂卡片
+    private static readonly HashSet<string> TextBlacklist = new(StringComparer.Ordinal)
+    {
+        "Clink",
+    };
     private static readonly TimeSpan PeekHold = TimeSpan.FromSeconds(2.8);
     private static readonly TimeSpan HideDelay = TimeSpan.FromMilliseconds(350);
 
@@ -284,8 +291,15 @@ public partial class LineWindow : Window
                 var text = Clipboard.GetText(TextDataFormat.Text);
                 if (!string.IsNullOrWhiteSpace(text) && text.Length <= 500)
                 {
-                    AddTextCapture(text);
-                    Logger.Log($"clipboard text pegged ({text.Length} chars)");
+                    if (TextBlacklist.Contains(text.Trim()))
+                    {
+                        Logger.Log($"blacklisted text ignored: {text.Trim()}");
+                    }
+                    else
+                    {
+                        AddTextCapture(text);
+                        Logger.Log($"clipboard text pegged ({text.Length} chars)");
+                    }
                 }
             }
         }
